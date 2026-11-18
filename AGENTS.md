@@ -6,20 +6,26 @@ Durable constraints for this repository. Read `docs/PLAN.md` before changing any
 
 Internal lead discovery and qualification tool for Kripa Associates, served at `leads.kripa.tech`. It finds businesses in a chosen area, enriches from their own websites, scores them on two separate axes, and exports a reviewed Excel sheet. It does not send outreach.
 
-Status: pre-scaffold. Only the M0 spike exists (`spikes/geoapify_probe.mjs`). No app code yet.
+Status: M1 + M2 deployed at `leads.kripa.tech`. Access JWT middleware, D1 schema, settings API, Geoapify geocoding/Places/Details discovery, dedupe, delivery exclusion, run counts, and credit budget are implemented. The web app can plan and start discovery runs. Enrichment, scoring, review, and export (M3-M6) remain.
+
+Runtime: Node 18.19 with Wrangler 3.x. `@cloudflare/vitest-pool-workers` cannot resolve module paths containing spaces, so tests are plain Vitest unit tests plus `scripts/smoke-local.sh` (real D1 + Worker over HTTP).
 
 ## Commands
 
 | Task | Command |
 |---|---|
+| Install | `npm install` |
 | M0 coverage spike | `node spikes/geoapify_probe.mjs` |
-| Typecheck (once scaffolded) | `npx tsc --noEmit` |
-| Local Worker dev | `npx wrangler dev` |
+| Typecheck | `npm run typecheck` |
+| Unit tests | `npm test` |
+| Local end-to-end smoke | `npm run smoke` |
+| Local Worker dev | `npm run dev` |
+| Web dev server (proxies `/api` to :8787) | `npm run dev:web` |
 | Apply D1 migrations locally | `npx wrangler d1 migrations apply leads-kripa --local` |
 | Apply D1 migrations remote | `npx wrangler d1 migrations apply leads-kripa --remote` |
-| Deploy | `npx wrangler deploy` |
+| Deploy | `npm run deploy` |
 
-Secrets: local scripts read `.env`; Wrangler reads `.dev.vars` with the same keys. Never commit either file.
+Secrets: local scripts read `.env`; Wrangler reads `.dev.vars` with the same keys. Never commit either file. `.dev.vars` also carries `ENVIRONMENT=development` and `AUTH_DEV_BYPASS=true` for local login; production must use `ENVIRONMENT=production` with no bypass and `wrangler secret put` for the Access values.
 
 Required keys: `GEOAPIFY_API_KEY`, `GROQ_API_KEY`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`.
 

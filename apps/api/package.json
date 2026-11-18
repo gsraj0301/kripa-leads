@@ -1,0 +1,21 @@
+{
+  "name": "@kripa/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kripa/db": "*",
+    "@kripa/shared": "*",
+    "@kripa/workflows": "*",
+    "hono": "4.13.19",
+    "jose": "5.10.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "vitest": "2.1.9"
+  }
+}

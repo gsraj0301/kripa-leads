@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "leads-kripa",
+  "main": "apps/api/src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "apps/web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "leads-kripa",
+      "database_id": "2ffe66f7-048a-488a-8e4d-abd45fb45097",
+      "migrations_dir": "packages/db/migrations"
+    }
+  ],
+  "routes": [
+    { "pattern": "leads.kripa.tech", "custom_domain": true }
+  ],
+  "workflows": [
+    {
+      "name": "leads-kripa-run",
+      "binding": "LEAD_RUN_WORKFLOW",
+      "class_name": "LeadRunWorkflow"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "AUTH_DEV_BYPASS": "false"
+  }
+}

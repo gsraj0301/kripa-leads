@@ -1,6 +1,6 @@
 # PLAN — Kripa Lead Discovery and Qualification
 
-Status: draft for approval (v3). Build starts after the M0 spike is reviewed.
+Status: M2 discovery deployed. Next: M3 enrichment.
 Last updated: 2026-11-18.
 
 ## 1. Objective
@@ -263,11 +263,30 @@ CA firms fail because the source data is absent, not because of the probe or bou
 
 ### M1 — Skeleton
 
-Worker + static assets + Access OTP + `jose` middleware; D1 migrations for six tables; settings API and form; segment config seeded with `msme` enabled and `ca_firm` present but disabled; fixtures for provider responses.
+Implemented locally (not deployed yet):
+
+- npm workspaces: `apps/web`, `apps/api`, `apps/workflows`, `packages/shared`, `packages/db`. One Worker entry (`apps/api/src/index.ts`) serves `/api/*` and static assets; `LeadRunWorkflow` is exported as a stub.
+- D1 schema `0001_init.sql` for the six tables. Settings are bootstrapped lazily from `DEFAULT_SETTINGS_CONFIG` in `@kripa/shared` (`INSERT OR IGNORE`), so defaults live in one place instead of a duplicated SQL seed.
+- Access JWT middleware (`jose`, remote JWKS, issuer/audience checks) with a dev-only bypass that refuses to run outside `ENVIRONMENT=development`.
+- Endpoints: `GET /api/health`, `GET /api/me`, `GET /api/segments`, `GET /api/settings`, `PUT /api/settings` (bumps `configVersion`, returns to provisional), `POST /api/settings/approve`.
+- Provisional metadata (`approved`, `provisional`, `provisionalReason`) is stored and shown in the web shell. Any config update clears approval.
+- Web shell shows session, enabled segments, config version, fit floor, and the provisional banner.
+- Verification: `npm run typecheck`, 9 Vitest unit tests (JWT verification, defaults/schema), and `npm run smoke` against real local D1 + Worker.
+
+Deployed: remote D1 `leads-kripa` created; migration applied; `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` set as Worker secrets; `leads.kripa.tech` custom domain attached and protected by Cloudflare Access OTP.
 
 ### M2 — Discovery
 
-Area input and geocode selection; segment categories; Places paging; dedupe; `deliveries` exclusion and toggle; raw/valid counts; credit estimate and counter.
+Implemented and deployed:
+
+- Area input with Geoapify Geocoding candidates and optional country filter; plan shows selected segments and a worst-case credit estimate.
+- Segment categories drive Geoapify Places queries with 500-result paging, 429/5xx retry, and rate limiting from settings.
+- Place Details supplies website/phone/email; raw payloads and per-field provenance are stored.
+- Dedupe by `place_id` then company key (normalized domain, else E.164 phone, else name+city); `deliveries` exclusion unless the per-run toggle is on.
+- Run creation snapshots selected segments and rubrics; start triggers the `LeadRunWorkflow` instance; statuses `planned`/`discovering`/`completed`/`failed`; raw/valid/invalid/credit counts are persisted.
+- Daily credit budget is checked before planning and enforced by the client during discovery.
+
+Verified locally against live Geoapify with a 2-result-per-category Chennai run: 6 raw/valid prospects, 9 credits, workflow completed.
 
 ### M3 — Enrichment
 
@@ -291,16 +310,15 @@ Kripa labels ~20 prospects good/bad. Present as a sanity check, not proof: 70% t
 
 ## 14. Open questions
 
-1. Access OTP email allowlist for the initial users.
+1. Access allowlist: `gsraj0301@gmail.com` is configured; add Kripa's users before rollout.
 2. Kripa sign-off on Geoapify terms and attribution wording.
 3. Kripa sign-off on the Groq commercial-use reading.
 4. Post-MVP: choose a CA-firm data source (ICAI directory access or a licensed provider); segment is parked until then.
-5. Approve `msme` discovery categories (`office.company`, `office.it`, `commercial`).
+5. `msme` categories approved for build (`office.company`, `office.it`, `commercial`).
 6. Confirm whether `manufacturer_distributor` is a real target.
-7. Approve provisional `fit_floor` 40 and the solo policy `off`.
-8. Approve retention numbers.
-9. Book the labeling session date.
-10. Which city after Chennai for the first real run.
+7. Weights, `fit_floor` 40, solo `off`, and retention are approved for build but stored as provisional/versioned pending Kripa's sign-off.
+8. Book the labeling session date.
+9. Which city after Chennai for the first real run.
 
 ## 15. Verification log
 
@@ -316,3 +334,6 @@ Kripa labels ~20 prospects good/bad. Present as a sanity check, not proof: 70% t
 | 2026-11-18 | M0 coverage (Chennai) | MSME bucket: 100 rows, 58% website, 46% reachable, 63% any channel, 8% junk — PASS. CA bucket: 4 rows — FAIL. |
 | 2026-11-18 | OSM CA coverage | `office.accountant` = 1 in Chennai, 180 in a rect covering India + neighbours; `office.tax_advisor` = 2 / 55; `office.financial_advisor` = 1 / 0. Boundary filter not the cause. |
 | 2026-11-18 | CA segment decision | Parked for MVP; `ca_firm` remains disabled configuration. MSME segment proceeds. |
+| 2026-11-18 | M1 local verification | Typecheck clean; 9 unit tests pass; smoke test covers health, dev session, settings bootstrap/update/approve, invalid input (400), API 404, and static shell against real D1. |
+| 2026-11-18 | M1 deploy | Remote D1 `leads-kripa` created, migrations applied, Access secrets set, `leads.kripa.tech` custom domain attached, Worker deployed. |
+| 2026-11-18 | M2 verification | Typecheck clean; 16 unit tests pass; smoke covers geocode/run validation; live local workflow run returned 6 valid prospects for 9 credits. |

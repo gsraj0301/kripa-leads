@@ -1,0 +1,27 @@
+{
+  "name": "kripa-leads",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:web": "npm run build -w @kripa/web",
+    "dev": "npm run build:web && wrangler dev",
+    "dev:web": "npm run dev -w @kripa/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test -w @kripa/api",
+    "db:migrate:local": "wrangler d1 migrations apply leads-kripa --local",
+    "db:migrate:remote": "wrangler d1 migrations apply leads-kripa --remote",
+    "deploy": "npm run build:web && wrangler deploy",
+    "smoke": "bash scripts/smoke-local.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "5.9.3",
+    "wrangler": "3.114.17",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,318 @@
+# PLAN — Kripa Lead Discovery and Qualification
+
+Status: draft for approval (v3). Build starts after the M0 spike is reviewed.
+Last updated: 2026-11-18.
+
+## 1. Objective
+
+Internal dashboard at `leads.kripa.tech` that:
+
+1. Takes an area name and one or more segments from the operator.
+2. Discovers businesses in that area from Geoapify (OpenStreetMap data).
+3. Validates and deduplicates them, excluding companies already delivered.
+4. Enriches from each prospect's own website.
+5. Extracts evidence tags with Groq, then computes two deterministic scores in code.
+6. Lets a human review, approve, and export a client-side Excel file.
+
+No outreach is sent. No lead is auto-qualified. No prospect is contacted by the system.
+
+## 2. Locked decisions
+
+| Topic | Decision |
+|---|---|
+| Hosting | Cloudflare, Workers Paid. Single Worker serving API, Workflows, and static assets. |
+| Discovery | Geoapify Places + Place Details + Geocoding. Free plan. No Google Places. |
+| Frontend | React + TypeScript + Vite + Tailwind. Normal browser app, not a PWA. |
+| Auth | Cloudflare Access, One-time PIN (no external IdP). JWT validated with `jose`. |
+| Storage | D1 only. No R2. Six tables. |
+| Scoring | Two scores: Fit and Contactability, 0-100 each. No composite. |
+| Scoring engine | Groq extracts tags and quotes; pure code computes scores. |
+| Export | Client-side SheetJS CE, cap 5,000 rows. No server archive. |
+| Delivered | Included in an export. Excluded forever unless the per-run toggle is on. |
+| Validity | Name plus at least one contact channel. Enrichment = website fetched successfully. |
+| Qualification | Human approval only. |
+| M0 city | Chennai. |
+
+## 3. Architecture
+
+```
+leads-kripa (single Worker)
+  /                static assets from apps/web/dist
+  /api/*           Hono routes + Access JWT middleware
+  LeadRunWorkflow  WorkflowEntrypoint exported from the same Worker
+```
+
+Repo layout (created at M1):
+
+```
+apps/web                 React + Vite + Tailwind
+apps/api                 Hono routes, Access middleware
+apps/workflows           LeadRunWorkflow class
+packages/shared          zod schemas, Geoapify client, SSRF guard, scoring, providers
+packages/db              D1 migrations, queries
+docs/PLAN.md             this file
+spikes/geoapify_probe.mjs  M0 only, not production code
+```
+
+## 4. Data model
+
+Six tables. All configuration lives in `settings`; nothing scoring-related is hardcoded.
+
+### `runs`
+`id`, `area`, `resolved_place_id`, `resolved_area_label`, `segment_ids_json`, `include_previously_delivered`, `plan_json`, `segments_snapshot_json`, `scoring_snapshot_json`, `scoring_config_version`, `status` (`draft|planned|approved|discovering|enriching|scoring|review|exported|failed|paused`), `counts_json`, `created_at`, `approved_at`, `approved_by`.
+
+`counts_json` holds `raw`, `valid`, `enriched`, `not_scored`, `scored`, `below_floor`, `review`, `qualified`, `exported`, `credits_used`, `tokens_in`, `tokens_out`, `extraction_calls`, `extraction_failures`, `quote_failures`.
+
+### `prospects`
+`id`, `run_id`, `segment_id`, `source`, `source_id`, `company_key`, `name`, `category`, `address`, `city`, `phone`, `website`, `email`, `lat`, `lng`, `status` (`raw|valid|enriched|not_scored|scored|review|qualified|rejected|below_floor`), `fit_score`, `fit_band`, `contactability_score`, `contactability_band`, `tags_json`, `facts_json`, `score_explain_json`, `score_config_version`, `needs_manual_contact_research`, `provenance_json`, `enrichment_json`, `created_at`, `updated_at`.
+
+`provenance_json` maps each field to `{source, source_url, retrieved_at, kind: verified|extracted|assumed}`.
+
+### `deliveries`
+`company_key` (primary key), `first_run_id`, `first_delivered_at`, `last_run_id`, `last_delivered_at`.
+
+### `events`
+`id`, `run_id`, `prospect_id`, `type`, `actor_email`, `payload_json`, `created_at`. Includes `lead_label` events for calibration.
+
+### `settings`
+`key`, `value_json`, `updated_at`, `updated_by`. Holds segments, rubric points, floors, budgets, retention, do-not-contact list reference, geocode cache.
+
+### `exports`
+`id`, `run_id`, `row_count`, `created_at`, `actor_email`.
+
+## 5. Pipeline
+
+1. **Plan.** Operator enters area and segment(s). Client calls Geocoding, shows candidates if confidence is low, stores `resolved_place_id`. Plan shows estimated provider credits, Groq tokens, and minutes. Human approves; snapshot is frozen.
+2. **Discovery.** For each segment category: Places query with `filter=place:<resolved_place_id>`, `limit=500` (paged). Dedupe by `place_id`, then by `company_key` (normalized domain, else E.164 phone, else name+city). Drop `deliveries` unless the toggle is on. Store `raw` with provenance.
+3. **Validation.** Require name plus at least one of phone, website, email. Assign `valid`; write counts. No silent drops.
+4. **Enrichment.** Fetch up to 3 same-registrable-domain pages. SSRF guard: manual redirects, DoH A/AAAA checks, block private and link-local ranges. Extract facts with HTMLRewriter: HTTP status, HTTPS, final URL, emails, phones, contact form, social links, copyright year. Respect `robots.txt` via `caches.default`. Per-page timeout 10s, per-prospect budget 60s. Failure degrades to `enriched` with partial facts.
+5. **Extraction.** Groq reads 3,000 chars of usable text and returns tags with verbatim quotes. Quote verification runs in code; failed quotes force the tag false.
+6. **Scoring.** `scoreProspect(tags, facts, config)` runs pure. Writes two scores, bands, and `score_explain_json`.
+7. **Review.** Human approves or rejects. `qualified` only by human action. `below_floor` stays visible, never deleted.
+8. **Export.** Client downloads xlsx; server records `exports` and upserts `deliveries`.
+
+Workflow granularity: one instance per run; steps batch 20-25 prospects to stay under the 1 MiB step-result cap; `step.do` retries with idempotency keys.
+
+## 6. Discovery provider
+
+Verified against Geoapify documentation on 2026-11-18:
+
+- Places search: `GET /v2/places`, max 500 per page, `filter=place:<id>` bounds results to the resolved area.
+- Contact fields come from Place Details (`GET /v2/place-details`): `website`, `contact.phone`, `contact.email`, `opening_hours`, `brand`, `operator`, `description`.
+- Credits: Places costs 1 credit for up to 20 results, plus 1 per additional 20; Place Details costs 1 credit; Geocoding 1 credit.
+- Free plan: 3,000 credits/day, 5 requests/second. FAQ allows commercial use in production with attribution. Terms say "with some limitations in the production phase" — Kripa sign-off pending.
+- Required attribution: OSM always; Geoapify mandatory on the free plan.
+
+Fallback options, documented but not built now: Open Places API (hosted Overture, ~$2 per 1,000 searches after 2,500 free), Overture offline (CDLA-Permissive, batch ETL), self-hosted Overpass. Foursquare Places API is excluded by its terms; Brave Search cannot persist results on the self-serve plan.
+
+### Attribution wording
+
+Footer:
+
+> Business data © OpenStreetMap contributors (ODbL) · Powered by Geoapify
+
+Excel `Sources` sheet and row 1 of `Prospects`:
+
+> Place data sourced from OpenStreetMap via Geoapify. © OpenStreetMap contributors, available under the Open Database License (ODbL): https://www.openstreetmap.org/copyright. Place search and geocoding powered by Geoapify: https://www.geoapify.com/. Fields marked `enriched` come from the prospect's own website; each carries its source URL and retrieval date in the `Provenance` column.
+
+## 7. Segments
+
+Segment selection happens at plan time. Each segment is configuration and owns its discovery categories, tag schema, weights, flags, solo policy, and floor.
+
+| Segment | Status | Discovery categories | Buyer |
+|---|---|---|---|
+| `ca_firm` | Parked for MVP (M0: no usable CA data in Geoapify) | `office.accountant`, `office.tax_advisor`, `office.financial_advisor` | Accounting practices buying white-label capacity |
+| `msme` | Enabled at M1 (M0 passed) | `office.company`, `office.it`, `commercial` | Indian MSMEs, funded startups, proprietors |
+| `manufacturer_distributor` | Disabled template | `production.factory`, `commercial.trade`, `office.company` | Manufacturers and distributors, pending Kripa confirmation |
+
+Verified against Geoapify's category list: there is no wholesale or distributor category; `commercial.trade` is the proxy. `production.factory` is the manufacturer category. The earlier guess is corrected.
+
+M0 finding: the CA-firm categories have only 4 places in Chennai and 180 `office.accountant` places in a rect covering India and neighbours. Geoapify/OSM cannot supply a CA-firm segment at the 100-lead scale. `msme` was re-based on `office.company`, `office.it`, and `commercial`, which have volume in Chennai (see `spikes/DIAGNOSTICS.md`).
+
+`msme` size bands follow Kripa's published plans: Nano (proprietor/dormant), Starter (< INR 2 cr), Growth (INR 2-15 cr), Scale (INR 15-50 cr), Enterprise (INR 50 cr+).
+
+Segment tags describe what each buyer *needs*, not what a CA firm advertises. `msme` tags include entity type, GSTIN count, payroll headcount, multi-state or export mentions, funding, audit mentions, years in business. `ca_firm` tags include advertised services, partner/team page, client volume, locations, tenure.
+
+## 8. Scoring
+
+### Fit (0-100)
+
+| Component | Max | Rule |
+|---|---|---|
+| Service fit | 50 | Sum of matched segment tag points, capped at 50. Tag points configured per segment. |
+| Size and scale | 25 | Headcount band 15 (1 -> 0, 2-4 -> 8, 5-50 -> 15, 51-200 -> 10, >200 -> 4) + office locations 10 (1 -> 0, 2-3 -> 3, 4+ -> 5) + 5 for unknown coverage handled by the unknown rule. |
+| Tenure and named people | 15 | Founding year 8 (>= 5y -> 8, 2-4y -> 5, < 2y -> 0) + team/partners page 7. |
+| Geography | 10 | In boundary 10, adjacent 5, outside 0. Computed from provider address, never from model output. |
+
+### Contactability (0-100), segment independent
+
+| Component | Max | Rule |
+|---|---|---|
+| Reachable channel | 40 | Format-valid phone 25 + published email 15 (role) or 10 (personal); capped at 40. |
+| Working site | 30 | 200 + HTML + HTTPS 30; HTTP-only 15; redirect to unrelated domain 5; dead 0. |
+| Contact path | 20 | Contact page or form 12 + at least one social profile 8. |
+| Freshness | 10 | Copyright year current 10; current-1 6; current-2 3; else 0. |
+
+### Observability, missing data, and `not_scored`
+
+- `observed_false`: a successfully read page was searched and the signal is absent. Scores 0. Service fit always uses this when text exists.
+- `not_observable`: the signal cannot be determined. Unknown credit is allowed only for Size and Tenure sub-signals, capped at 50% of that sub-signal's maximum. Never for Service fit or Geography.
+- `not_scored`: no usable text (fetch failure, non-HTML, JS shell, or fewer than 400 chars after boilerplate strip). Both scores null. No unknown credit. Shown in a separate list with the reason and `needs_manual_contact_research`.
+
+Every component stores `observation` and the reason, so the UI distinguishes "not stated" from "site unreadable".
+
+### Negative signals
+
+Configured per segment, two modes:
+
+- `exclude`: clamp Fit to 0 and set band `excluded`. Used for directory/aggregator listings and defunct or closed signals.
+- `deduct`: additive after components, then clamped to 0-100. Defaults: franchise or chain -30, enterprise brand -15.
+
+No other hidden caps. Solo practitioners get no cap by default (`solo_policy: off`); Kripa can later set a deduction or cap as configuration.
+
+### Gate and ranking
+
+- No Contactability gate. Validity already requires one channel.
+- Per-segment `fit_floor`, provisional 40 until the M0 spike calibrates it.
+- Everything at or above the floor is exportable, sorted Fit descending then Contactability descending, with both bands visible.
+- Below floor is `below_floor`, visible with explanations, not rejected or deleted.
+- `needs_manual_contact_research` when no verified email or phone from the site, or Contactability below 40. Filterable, never disqualifying.
+- `qualified` is human-only.
+
+### Quote verification
+
+For every tag with `present: true`, NFKC-normalize, lowercase, and collapse whitespace on both the quote and the full fetched text. Substring check. Miss -> tag false, `verified: false`, event `quote_unverified`. Per-run failure rate above 5% raises a run warning. Raw stored tags also record a `verified_quote` boolean.
+
+## 9. Extraction with Groq
+
+Schema is compact: short tag keys, booleans with one quote each (max 120 chars), integer counts, and flags. Example:
+
+```json
+{"tags":{"bookkeeping":{"p":true,"q":"monthly bookkeeping and bank reconciliation"},"gst":{"p":true,"q":"GSTR-1 and GSTR-3B filing"}},
+ "counts":{"team":7,"offices":2,"founded":2011},
+ "flags":{"directory":false,"franchise":false,"enterprise":false,"solo":false}}
+```
+
+Limits and accounting:
+
+- Input: 3,000 chars of page text (~750 tokens) plus ~350 tokens of instructions/schema, output ~200 tokens. About 1,300 tokens per prospect.
+- 100 prospects is ~130,000 tokens. Run hard budget 140,000. Free tier TPD is 200,000, leaving ~60,000 for the spike and one retry pass, including developer testing.
+- TPM 8,000 means roughly 6 calls/min; 100 prospects takes 17-20 minutes.
+- Count real `usage.total_tokens` from responses into `runs.counts_json` and a daily quota row. Do not estimate.
+- If remaining quota cannot cover the next batch, `step.sleep` until the next UTC day and resume. Sleeping instances do not consume Workflow concurrency.
+- 429 handling: honour `retry-after`, exponential backoff, idempotent per-prospect steps.
+- Provider interface `ExtractionProvider.extract(text, schema)` with a Groq implementation, so Workers AI or another provider can replace it without pipeline changes.
+
+Commercial use: the website Terms of Use exclude GroqCloud; the Groq Services Agreement governs and permits building a Customer Application on the service, provides for fee-free usage, and states Inputs/Outputs are not used for training. This is a reading, not legal advice. Kripa signs off in writing before production; the sign-off cites the agreement URL and date.
+
+## 10. Export
+
+Client-side SheetJS CE (`@e965/xlsx`). `XLSX.write({type:"array",bookType:"xlsx"})`. Cap 5,000 rows.
+
+Sheets: `Prospects` (attribution note in row 1; Fit and Contactability scores and bands; top score evidence; provenance per field), `Sources`, `Run Summary` (counts, shortfall, config version, provider credits and tokens used).
+
+Shortfall: if valid prospects are below the requested target, report the gap and offer widening options (expand area, add categories, lower the floor). Never pad.
+
+On export, server records `exports`, upserts `deliveries`, and sets `run.status = exported`.
+
+## 11. Auth
+
+Cloudflare Access in front of `leads.kripa.tech`. One-time PIN for the initial user set; no external IdP. The Worker validates `Cf-Access-Jwt-Assertion` with `jose` against `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, checking issuer and `CF_ACCESS_AUD`. `ctx.access` is not used because static assets are served by the same Worker. Every mutation records `actor_email` from the verified JWT.
+
+## 12. Retention, privacy, legal
+
+- Deliveries: forever, company key plus name and domain only.
+- Rejected prospects and enrichment text: 12 months.
+- Raw provider payloads: 90 days.
+- Events: 12 months. Run and export metadata: 24 months.
+- Monthly purge Workflow.
+- Store business channels only; prefer role addresses. Honour deletion requests within 30 days. Maintain `do_not_contact`, checked at export.
+- Outbound calls, personal mobile numbers, or exporting outside the firm would require a DPDP Act 2023 review. Not in MVP scope.
+
+## 13. Milestones
+
+### M0 — Geoapify coverage spike (current)
+
+Script: `spikes/geoapify_probe.mjs`, no production code. City: Chennai. Two buckets, same gates:
+
+| Bucket | Categories |
+|---|---|
+| CA firms | `office.accountant`, `office.tax_advisor`, `office.financial_advisor` |
+| General business | `office.company`, `office.it`, `commercial` |
+
+Up to 50 results per category, deduped, capped at 100 per bucket. Place Details for every deduped place, then a 10-second homepage probe with one retry on timeout/network errors. Writes `spikes/REPORT.md` and `spikes/probe.csv`.
+
+Gates per bucket:
+
+- Rows >= 100
+- Website present in OSM >= 40%
+- Any contact channel >= 60%
+- Suspected junk <= 15%
+- Address in area >= 80%
+
+Suspected junk means closed text, missing address, duplicate name+address, or a confirmed-dead site (404/410/DNS/refused). Sparse contact data is reported separately, not counted as junk.
+
+M0 outcome (2026-11-18, Chennai, 114 requests / ~115 credits):
+
+| Bucket | Rows | Website | Reachable | Phone | Email | Any channel | Junk | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| CA firms | 4 | 25% | 25% | 25% | 0% | 25% | 0% | FAIL |
+| General business | 100 | 58% | 46% | 45% | 17% | 63% | 8% | PASS |
+
+CA firms fail because the source data is absent, not because of the probe or boundary filter; see `spikes/DIAGNOSTICS.md`. Decision: CA firms are parked for the MVP. The MSME segment ships; `ca_firm` stays as disabled configuration until a data source (ICAI directory or a licensed provider) is agreed.
+
+### M1 — Skeleton
+
+Worker + static assets + Access OTP + `jose` middleware; D1 migrations for six tables; settings API and form; segment config seeded with `msme` enabled and `ca_firm` present but disabled; fixtures for provider responses.
+
+### M2 — Discovery
+
+Area input and geocode selection; segment categories; Places paging; dedupe; `deliveries` exclusion and toggle; raw/valid counts; credit estimate and counter.
+
+### M3 — Enrichment
+
+SSRF guard; HTMLRewriter facts; robots handling; provenance; partial-failure degradation; page and prospect time budgets.
+
+### M4 — Extraction and scoring
+
+Groq provider; compact schema; quote verification; pure `scoreProspect`; observability states; explain panel; token accounting and pause/resume.
+
+### M5 — Review
+
+Two scores and bands; evidence quotes; `needs_manual_contact_research` filter; approve/reject; below-floor and not-scored views; events.
+
+### M6 — Export
+
+Client xlsx with attribution and provenance; deliveries write; include-previously-delivered toggle; exports audit; shortfall and widening options.
+
+### M7 — Calibration and hardening
+
+Kripa labels ~20 prospects good/bad. Present as a sanity check, not proof: 70% top-half agreement is 20 points above chance and noisy at n=20. Any disagreement is fixed by editing weights in settings and re-scoring stored tags, never by code changes. Book the 60-90 minute labeling session when M1 starts, targeting the day after the first export. Also: purge job, run warnings, README.
+
+## 14. Open questions
+
+1. Access OTP email allowlist for the initial users.
+2. Kripa sign-off on Geoapify terms and attribution wording.
+3. Kripa sign-off on the Groq commercial-use reading.
+4. Post-MVP: choose a CA-firm data source (ICAI directory access or a licensed provider); segment is parked until then.
+5. Approve `msme` discovery categories (`office.company`, `office.it`, `commercial`).
+6. Confirm whether `manufacturer_distributor` is a real target.
+7. Approve provisional `fit_floor` 40 and the solo policy `off`.
+8. Approve retention numbers.
+9. Book the labeling session date.
+10. Which city after Chennai for the first real run.
+
+## 15. Verification log
+
+| Date | Item | Result |
+|---|---|---|
+| 2026-11-18 | Geoapify free plan commercial use | Pricing FAQ: allowed in production with attribution. Terms: "with some limitations"; sign-off pending. |
+| 2026-11-18 | Geoapify credits | Places 1 credit <= 20 results, +1 per 20; Details 1 credit; Geocoding 1. |
+| 2026-11-18 | Geoapify categories | `office.accountant`, `office.tax_advisor`, `office.financial_advisor`, `office.company`, `commercial.trade`, `production.factory` verified. No wholesale/distributor category. |
+| 2026-11-18 | Groq limits | gpt-oss-120b free: 30 RPM, 1,000 RPD, 8,000 TPM, 200,000 TPD. |
+| 2026-11-18 | Groq terms | Services Agreement permits Customer Applications; no training on Inputs/Outputs; website ToU excludes GroqCloud. Reading only, not legal advice. |
+| 2026-11-18 | Workflow sleep | `step.sleep` up to 365 days; waiting instances do not count against concurrency. |
+| 2026-11-18 | kripa.tech positioning | Serves Indian MSMEs, funded startups, and CA firms; plan tiers give size bands. |
+| 2026-11-18 | M0 coverage (Chennai) | MSME bucket: 100 rows, 58% website, 46% reachable, 63% any channel, 8% junk — PASS. CA bucket: 4 rows — FAIL. |
+| 2026-11-18 | OSM CA coverage | `office.accountant` = 1 in Chennai, 180 in a rect covering India + neighbours; `office.tax_advisor` = 2 / 55; `office.financial_advisor` = 1 / 0. Boundary filter not the cause. |
+| 2026-11-18 | CA segment decision | Parked for MVP; `ca_firm` remains disabled configuration. MSME segment proceeds. |

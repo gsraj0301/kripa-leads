@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "tldts": "6.1.86",
     "zod": "4.6.7"
   }
 }

@@ -30,6 +30,36 @@ export const DISCOVERY_DEFAULTS: DiscoveryConfig = {
   defaultCountryCode: "in",
 };
 
+export const EnrichmentConfigSchema = z.object({
+  maxPagesPerProspect: z.number().int().min(1).max(5),
+  pageTimeoutMs: z.number().int().min(1_000).max(30_000),
+  prospectBudgetMs: z.number().int().min(5_000).max(120_000),
+  maxConcurrency: z.number().int().min(1).max(10),
+  maxRedirects: z.number().int().min(0).max(10),
+  maxHtmlBytes: z.number().int().min(10_000).max(2_000_000),
+  totalTextChars: z.number().int().min(400).max(200_000),
+  minUsableTextChars: z.number().int().min(100).max(5_000),
+  respectRobots: z.boolean(),
+  robotsCacheTtlSeconds: z.number().int().min(0).max(604_800),
+  userAgent: z.string().min(5).max(200),
+});
+
+export type EnrichmentConfig = z.infer<typeof EnrichmentConfigSchema>;
+
+export const ENRICHMENT_DEFAULTS: EnrichmentConfig = {
+  maxPagesPerProspect: 3,
+  pageTimeoutMs: 10_000,
+  prospectBudgetMs: 60_000,
+  maxConcurrency: 4,
+  maxRedirects: 5,
+  maxHtmlBytes: 750_000,
+  totalTextChars: 30_000,
+  minUsableTextChars: 400,
+  respectRobots: true,
+  robotsCacheTtlSeconds: 86_400,
+  userAgent: "KripaLeadsBot/0.1 (+https://leads.kripa.tech)",
+};
+
 export const NegativeFlagSchema = z
   .object({
     id: z.string().min(1),
@@ -104,6 +134,7 @@ export const SettingsConfigSchema = z
     rubrics: z.record(z.string(), RubricSchema),
     retention: RetentionSchema,
     discovery: DiscoveryConfigSchema.default(DISCOVERY_DEFAULTS),
+    enrichment: EnrichmentConfigSchema.default(ENRICHMENT_DEFAULTS),
   })
   .superRefine((config, ctx) => {
     const ids = new Set<string>();
@@ -270,4 +301,5 @@ export const DEFAULT_SETTINGS_CONFIG: SettingsConfig = {
   },
   retention: BASE_RETENTION,
   discovery: DISCOVERY_DEFAULTS,
+  enrichment: ENRICHMENT_DEFAULTS,
 };

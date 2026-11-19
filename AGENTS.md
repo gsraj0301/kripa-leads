@@ -6,7 +6,7 @@ Durable constraints for this repository. Read `docs/PLAN.md` before changing any
 
 Internal lead discovery and qualification tool for Kripa Associates, served at `leads.kripa.tech`. It finds businesses in a chosen area, enriches from their own websites, scores them on two separate axes, and exports a reviewed Excel sheet. It does not send outreach.
 
-Status: M1 + M2 deployed at `leads.kripa.tech`. Access JWT middleware, D1 schema, settings API, Geoapify geocoding/Places/Details discovery, dedupe, delivery exclusion, run counts, and credit budget are implemented. The web app can plan and start discovery runs. Enrichment, scoring, review, and export (M3-M6) remain.
+Status: M1-M3 deployed at `leads.kripa.tech`. Access JWT middleware, D1 schema, settings API, Geoapify geocoding/Places/Details discovery, dedupe, delivery exclusion, run counts, credit budget, and website enrichment with SSRF guard, robots handling, HTMLRewriter facts and provenance are implemented. The web app can plan, start, and monitor discovery plus enrichment runs. Scoring, review, and export (M4-M6) remain.
 
 Runtime: Node 18.19 with Wrangler 3.x. `@cloudflare/vitest-pool-workers` cannot resolve module paths containing spaces, so tests are plain Vitest unit tests plus `scripts/smoke-local.sh` (real D1 + Worker over HTTP).
 

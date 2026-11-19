@@ -44,6 +44,7 @@ export const ProspectStatusSchema = z.enum([
 export const RunStatusSchema = z.enum([
   "planned",
   "discovering",
+  "enriching",
   "running",
   "paused",
   "completed",

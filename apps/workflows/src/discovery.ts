@@ -17,7 +17,7 @@ import {
   getRun,
   insertEvent,
   insertProspects,
-  updateRunStatus,
+  updateRunCounts,
   type ProspectInsert,
 } from "@kripa/db";
 
@@ -217,6 +217,10 @@ export async function discoverRun(
     raw: kept.length,
     valid,
     enriched: 0,
+    enrichmentFailures: 0,
+    pagesFetched: 0,
+    skippedNoWebsite: 0,
+    robotsBlocked: 0,
     scored: 0,
     notScored: 0,
     belowFloor: 0,
@@ -230,7 +234,7 @@ export async function discoverRun(
     duplicateCompanyKeys: deduped.duplicateCompanyKeys,
   };
 
-  await updateRunStatus(env.DB, runId, "completed", counts);
+  await updateRunCounts(env.DB, runId, counts);
   await insertEvent(env.DB, {
     runId,
     eventType: "run_discovered",

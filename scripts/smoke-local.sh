@@ -79,6 +79,7 @@ curl -sf -X PUT -H 'content-type: application/json' \
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
   const j=JSON.parse(s).settings;
   if(j.approved!==false || j.provisional!==true) throw new Error("update should return to provisional");
+  if(j.enrichment?.maxPagesPerProspect!==3 || j.enrichment?.respectRobots!==true) throw new Error("enrichment defaults missing");
   console.log("settings update ok, version", j.configVersion);
 });'
 

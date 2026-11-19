@@ -1,7 +1,7 @@
 # PLAN — Kripa Lead Discovery and Qualification
 
-Status: M2 discovery deployed. Next: M3 enrichment.
-Last updated: 2026-11-18.
+Status: M3 enrichment deployed. Next: M4 extraction and scoring.
+Last updated: 2026-11-19.
 
 ## 1. Objective
 
@@ -290,7 +290,17 @@ Verified locally against live Geoapify with a 2-result-per-category Chennai run:
 
 ### M3 — Enrichment
 
-SSRF guard; HTMLRewriter facts; robots handling; provenance; partial-failure degradation; page and prospect time budgets.
+Implemented and deployed:
+
+- Settings `enrichment`: max pages per prospect (3), page timeout (10s), prospect budget (60s), concurrency (4), redirect cap, HTML byte cap, total text cap, minimum usable text, robots cache TTL, user agent. Defaults are applied to older stored settings.
+- SSRF guard: manual redirects with per-hop validation, DoH A/AAAA resolution via `cloudflare-dns.com`, blocked loopback/private/link-local/CGNAT/multicast/reserved IPv4 and IPv6 (including mapped, NAT64, 6to4 and Teredo forms), credentials and non-standard ports rejected, hostname suffix blocklist, fail closed on DNS failure.
+- `robots.txt`: fetched through the same SSRF path, cached with `caches.default`, longest-match Allow/Disallow with wildcard and `$`, 403 treated as full disallow, 4xx/5xx fail open with the reason recorded.
+- HTML extraction: two-pass HTMLRewriter. The first pass strips script/style/noscript/svg/template and collects title, description, links, forms, `mailto`/`tel` and social links; the second pass reads visible text from the cleaned markup. Phone numbers require a `tel:` link or nearby phone/call/mobile/contact context, which avoids numeric false positives.
+- Page selection: homepage plus up to two same-registrable-domain contact/about/team pages, same-host pages ranked first, auth/privacy/file URLs skipped.
+- Facts and provenance: status, final URL, HTTPS, content type, redirects, reachable, emails, phones, socials, contact form, copyright year, text length and usability, per-page errors, robots block. Provenance entries are `verified` with source page and retrieval time.
+- Workflow: discovery then `enriching`, 20-prospect `enrich-batch-N` steps with a persisted max-concurrency config, idempotent retries, final summary counts and `run_enriched`. Site fetch failures stay `enriched` with partial facts; prospects without a website stay `valid` and are counted separately.
+- Counts: `enriched`, `enrichmentFailures`, `pagesFetched`, `skippedNoWebsite`, `robotsBlocked`.
+- Verification: typecheck clean, 36 unit tests, smoke, and a live local Chennai run (6 valid, 6 enriched, 6 pages, 3 site failures) against real websites. Deployed as Worker version `6c28e0ab-9bf7-4657-844c-03f890b6e75f`; Access still gates the domain.
 
 ### M4 — Extraction and scoring
 
@@ -337,3 +347,5 @@ Kripa labels ~20 prospects good/bad. Present as a sanity check, not proof: 70% t
 | 2026-11-18 | M1 local verification | Typecheck clean; 9 unit tests pass; smoke test covers health, dev session, settings bootstrap/update/approve, invalid input (400), API 404, and static shell against real D1. |
 | 2026-11-18 | M1 deploy | Remote D1 `leads-kripa` created, migrations applied, Access secrets set, `leads.kripa.tech` custom domain attached, Worker deployed. |
 | 2026-11-18 | M2 verification | Typecheck clean; 16 unit tests pass; smoke covers geocode/run validation; live local workflow run returned 6 valid prospects for 9 credits. |
+| 2026-11-19 | M3 verification | Typecheck clean; 36 unit tests pass; smoke covers settings enrichment defaults; live local Chennai run: 6 valid, 6 enriched, 6 pages, 3 site failures, 9 credits. Website text no longer includes script/style content; phone extraction is context-scoped. |
+| 2026-11-19 | M3 deploy | Worker `6c28e0ab-9bf7-4657-844c-03f890b6e75f` deployed; no new migration; `leads.kripa.tech` and `/api/health` still 302 to Access. |

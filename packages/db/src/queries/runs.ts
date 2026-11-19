@@ -102,6 +102,58 @@ export async function updateRunStatus(
   return getRun(db, id);
 }
 
+export async function updateRunCounts(
+  db: D1Database,
+  id: string,
+  counts: RunCounts,
+): Promise<void> {
+  await db
+    .prepare("UPDATE runs SET counts_json = ?, updated_at = ? WHERE id = ?")
+    .bind(jsonText(counts), nowIso(), id)
+    .run();
+}
+
+export interface EnrichmentSummary {
+  enriched: number;
+  skippedNoWebsite: number;
+  pagesFetched: number;
+  failures: number;
+  robotsBlocked: number;
+}
+
+export async function summarizeEnrichment(
+  db: D1Database,
+  runId: string,
+): Promise<EnrichmentSummary> {
+  const row = await db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN status = 'enriched' THEN 1 ELSE 0 END), 0) AS enriched,
+         COALESCE(SUM(CASE WHEN status = 'valid' AND (website IS NULL OR website = '') THEN 1 ELSE 0 END), 0) AS skipped_no_website,
+         COALESCE(SUM(CASE WHEN status = 'enriched' THEN COALESCE(json_extract(enrichment_json, '$.pagesFetched'), 0) ELSE 0 END), 0) AS pages_fetched,
+         COALESCE(SUM(CASE WHEN status = 'enriched' AND json_extract(enrichment_json, '$.failed') = 1 THEN 1 ELSE 0 END), 0) AS failures,
+         COALESCE(SUM(CASE WHEN status = 'enriched' AND json_extract(enrichment_json, '$.robotsBlocked') = 1 THEN 1 ELSE 0 END), 0) AS robots_blocked
+       FROM prospects
+       WHERE run_id = ?`,
+    )
+    .bind(runId)
+    .first<{
+      enriched: number;
+      skipped_no_website: number;
+      pages_fetched: number;
+      failures: number;
+      robots_blocked: number;
+    }>();
+
+  return {
+    enriched: Number(row?.enriched ?? 0),
+    skippedNoWebsite: Number(row?.skipped_no_website ?? 0),
+    pagesFetched: Number(row?.pages_fetched ?? 0),
+    failures: Number(row?.failures ?? 0),
+    robotsBlocked: Number(row?.robots_blocked ?? 0),
+  };
+}
+
 export async function getCreditsUsedOnDate(
   db: D1Database,
   datePrefix: string,

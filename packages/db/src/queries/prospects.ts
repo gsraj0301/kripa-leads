@@ -111,6 +111,58 @@ export async function insertProspects(
   return results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0);
 }
 
+export async function listProspectsForEnrichment(
+  db: D1Database,
+  runId: string,
+  limit: number,
+): Promise<Prospect[]> {
+  const rows = await db
+    .prepare(
+      `SELECT * FROM prospects
+        WHERE run_id = ? AND status = 'valid' AND website IS NOT NULL AND website != ''
+        ORDER BY created_at ASC
+        LIMIT ?`,
+    )
+    .bind(runId, limit)
+    .all<ProspectRow>();
+  return rows.results.map(toProspect);
+}
+
+export interface ProspectEnrichmentUpdate {
+  id: string;
+  facts: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+  enrichment: Record<string, unknown>;
+  status: "enriched";
+}
+
+export async function updateProspectEnrichments(
+  db: D1Database,
+  updates: ProspectEnrichmentUpdate[],
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  const now = nowIso();
+  const statements = updates.map((update) =>
+    db
+      .prepare(
+        `UPDATE prospects
+            SET facts_json = ?, provenance_json = ?, enrichment_json = ?,
+                status = ?, updated_at = ?
+          WHERE id = ?`,
+      )
+      .bind(
+        jsonText(update.facts),
+        jsonText(update.provenance),
+        jsonText(update.enrichment),
+        update.status,
+        now,
+        update.id,
+      ),
+  );
+  const results = await db.batch(statements);
+  return results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0);
+}
+
 export async function listProspectsByRun(db: D1Database, runId: string): Promise<Prospect[]> {
   const rows = await db
     .prepare("SELECT * FROM prospects WHERE run_id = ? ORDER BY created_at ASC")

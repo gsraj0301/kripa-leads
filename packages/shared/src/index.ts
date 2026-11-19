@@ -1,5 +1,6 @@
 export * from "./common";
 export * from "./discovery";
+export * from "./enrichment";
 export * from "./errors";
 export * from "./segment";
 export * from "./settings";

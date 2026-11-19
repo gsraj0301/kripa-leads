@@ -25,6 +25,7 @@ function statusClass(status: string): string {
   if (status === "completed") return "bg-emerald-100 text-emerald-800";
   if (status === "failed") return "bg-red-100 text-red-800";
   if (status === "discovering") return "bg-sky-100 text-sky-800";
+  if (status === "enriching") return "bg-indigo-100 text-indigo-800";
   if (status === "planned") return "bg-amber-100 text-amber-800";
   return "bg-slate-100 text-slate-600";
 }
@@ -425,6 +426,16 @@ export function App() {
                       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
                         <span>raw {run.counts.raw}</span>
                         <span>valid {run.counts.valid}</span>
+                        <span>enriched {run.counts.enriched}</span>
+                        <span>pages {run.counts.pagesFetched}</span>
+                        {run.counts.enrichmentFailures > 0 && (
+                          <span className="text-red-600">
+                            site failures {run.counts.enrichmentFailures}
+                          </span>
+                        )}
+                        {run.counts.skippedNoWebsite > 0 && (
+                          <span>no website {run.counts.skippedNoWebsite}</span>
+                        )}
                         <span>delivered dropped {run.counts.droppedDelivered}</span>
                         <span>credits {run.counts.creditsUsed}</span>
                         <span>segments {run.segmentIds.join(", ")}</span>

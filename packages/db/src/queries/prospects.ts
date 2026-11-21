@@ -163,9 +163,135 @@ export async function updateProspectEnrichments(
   return results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0);
 }
 
+export async function getNextProspectForExtraction(
+  db: D1Database,
+  runId: string,
+): Promise<Prospect | null> {
+  const row = await db
+    .prepare(
+      `SELECT * FROM prospects
+        WHERE run_id = ? AND status = 'enriched'
+          AND COALESCE(json_extract(enrichment_json, '$.usable'), 0) = 1
+        ORDER BY created_at ASC
+        LIMIT 1`,
+    )
+    .bind(runId)
+    .first<ProspectRow>();
+  return row ? toProspect(row) : null;
+}
+
+export interface ProspectScoreUpdate {
+  id: string;
+  status: "scored" | "not_scored" | "below_floor";
+  tags: Record<string, unknown>;
+  fitScore: number | null;
+  fitBand: string | null;
+  contactabilityScore: number | null;
+  contactabilityBand: string | null;
+  scoreExplain: Record<string, unknown>;
+  needsManualContactResearch: boolean;
+  provenance: Record<string, unknown>;
+}
+
+export async function updateProspectScore(
+  db: D1Database,
+  update: ProspectScoreUpdate,
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE prospects
+          SET tags_json = ?, fit_score = ?, fit_band = ?, contactability_score = ?,
+              contactability_band = ?, score_explain_json = ?,
+              needs_manual_contact_research = ?, provenance_json = ?,
+              status = ?, updated_at = ?
+        WHERE id = ? AND status IN ('enriched', 'scored', 'not_scored', 'below_floor')`,
+    )
+    .bind(
+      jsonText(update.tags),
+      update.fitScore,
+      update.fitBand,
+      update.contactabilityScore,
+      update.contactabilityBand,
+      jsonText(update.scoreExplain),
+      update.needsManualContactResearch ? 1 : 0,
+      jsonText(update.provenance),
+      update.status,
+      nowIso(),
+      update.id,
+    )
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+export async function markNotScoredProspects(
+  db: D1Database,
+  runId: string,
+  reason: string,
+  detail?: string,
+): Promise<number> {
+  const explain = jsonText({ version: 1, reason, detail });
+  const result = await db
+    .prepare(
+      `UPDATE prospects
+          SET status = 'not_scored', fit_score = NULL, fit_band = NULL,
+              contactability_score = NULL, contactability_band = NULL,
+              needs_manual_contact_research = 1, score_explain_json = ?,
+              updated_at = ?
+        WHERE run_id = ? AND status IN ('enriched', 'valid')
+          AND COALESCE(json_extract(enrichment_json, '$.usable'), 0) != 1`,
+    )
+    .bind(explain, nowIso(), runId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+export async function markProspectNotScored(
+  db: D1Database,
+  id: string,
+  reason: string,
+  detail?: string,
+): Promise<number> {
+  const explain = jsonText({ version: 1, reason, detail });
+  const result = await db
+    .prepare(
+      `UPDATE prospects
+          SET status = 'not_scored', fit_score = NULL, fit_band = NULL,
+              contactability_score = NULL, contactability_band = NULL,
+              needs_manual_contact_research = 1, score_explain_json = ?,
+              updated_at = ?
+        WHERE id = ? AND status = 'enriched'`,
+    )
+    .bind(explain, nowIso(), id)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+export async function markRemainingEnrichedNotScored(
+  db: D1Database,
+  runId: string,
+  reason: string,
+  detail?: string,
+): Promise<number> {
+  const explain = jsonText({ version: 1, reason, detail });
+  const result = await db
+    .prepare(
+      `UPDATE prospects
+          SET status = 'not_scored', needs_manual_contact_research = 1,
+              score_explain_json = ?, updated_at = ?
+        WHERE run_id = ? AND status = 'enriched'`,
+    )
+    .bind(explain, nowIso(), runId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function listProspectsByRun(db: D1Database, runId: string): Promise<Prospect[]> {
   const rows = await db
-    .prepare("SELECT * FROM prospects WHERE run_id = ? ORDER BY created_at ASC")
+    .prepare(
+      `SELECT * FROM prospects WHERE run_id = ?
+        ORDER BY CASE WHEN fit_score IS NULL THEN 1 ELSE 0 END,
+                 fit_score DESC, contactability_score DESC, created_at ASC`,
+    )
     .bind(runId)
     .all<ProspectRow>();
   return rows.results.map(toProspect);

@@ -1,6 +1,6 @@
 # PLAN — Kripa Lead Discovery and Qualification
 
-Status: M3 enrichment deployed. Next: M4 extraction and scoring.
+Status: M4 extraction and scoring deployed. Next: M5 review.
 Last updated: 2026-11-19.
 
 ## 1. Objective
@@ -304,7 +304,17 @@ Implemented and deployed:
 
 ### M4 — Extraction and scoring
 
-Groq provider; compact schema; quote verification; pure `scoreProspect`; observability states; explain panel; token accounting and pause/resume.
+Implemented and deployed:
+
+- Settings `extraction`: enabled, Groq model (`openai/gpt-oss-120b`), input cap 3,000 chars, output cap 800 tokens, temperature 0, `reasoningEffort` (low/medium/high, default low), timeout, retries, `minIntervalMs` 10s, daily and per-run token budgets, estimated tokens per prospect. Settings `scoring`: Fit/Contactability bands, manual-research threshold, role-email prefixes. Segments carry `tagDefinitions` and `soloCap`; rubric subcomponent points are configurable and validated against component maxima.
+- Groq provider behind `ExtractionProvider`: compact JSON mode, one fallback without `response_format` when Groq rejects JSON validation, 429/5xx retry with backoff, quota detection, and real `usage` totals returned to the workflow.
+- Prompt limits input to usable page text and requires a verbatim quote for every present tag. Code verifies quotes after NFKC normalization, lowercasing and whitespace collapse; a failed or missing quote forces the tag false and records `quote_unverified`. Over 5% failures raises a run warning.
+- Pure `scoreProspect`: Fit from verified service tags, size (`headcount`, `offices`), tenure (`founded`, configured team-page signal) and geography; Contactability from reachable channel, working site, contact path and freshness. Unknown credit only for size and tenure; service fit never gets unknown credit. Negative flags exclude or deduct; solo policy `off`/`cap`/`exclude`. Fit floor is checked before bands. Statuses: `scored`, `below_floor`, `not_scored`; no usable text yields both scores null.
+- `needs_manual_contact_research` when the site supplies no email or phone or Contactability is below the configured threshold. Explain JSON records component points, maxima, observation, reason, negative flags, solo policy and verified tag evidence.
+- Workflow: discovery -> enrichment -> `scoring`. Per-prospect `score-prospect-N` steps extract and score idempotently. Daily quota shortfall pauses with `step.sleepUntil` at the next UTC midnight; run-budget shortfall marks remaining enriched prospects `not_scored` with reason `run_token_budget`; missing/unusable text is marked `not_scored` with `no_usable_text`.
+- Counts/events: `scored`, `belowFloor`, `notScored`, `tokensIn`, `tokensOut`, `extractionCalls`, `extractionFailures`, `quoteChecks`, `quoteFailures`; `groq_usage`, `prospect_scored`, `quote_unverified`, `run_warning`, `run_scored`.
+- Web UI shows scoring counts, token usage, quote failures and an explain panel with component breakdown and verified evidence.
+- Verification: typecheck clean, 54 unit tests, smoke, and a live local Chennai run: 6 valid, 3 enriched, 3 site failures, 3 below floor, 3 not scored, 3,986 tokens, 1 quote check with 0 failures, 9 credits. Groq extraction now completes with low reasoning effort and an 800-token output cap. Deployed as Worker version `3d2f3245-ae0b-4a2b-9642-b7837c7ceab3`; `GROQ_API_KEY` set as a Worker secret; Access still gates the domain.
 
 ### M5 — Review
 
@@ -349,3 +359,6 @@ Kripa labels ~20 prospects good/bad. Present as a sanity check, not proof: 70% t
 | 2026-11-18 | M2 verification | Typecheck clean; 16 unit tests pass; smoke covers geocode/run validation; live local workflow run returned 6 valid prospects for 9 credits. |
 | 2026-11-19 | M3 verification | Typecheck clean; 36 unit tests pass; smoke covers settings enrichment defaults; live local Chennai run: 6 valid, 6 enriched, 6 pages, 3 site failures, 9 credits. Website text no longer includes script/style content; phone extraction is context-scoped. |
 | 2026-11-19 | M3 deploy | Worker `6c28e0ab-9bf7-4657-844c-03f890b6e75f` deployed; no new migration; `leads.kripa.tech` and `/api/health` still 302 to Access. |
+| 2026-11-19 | M4 verification | Typecheck clean; 54 unit tests pass; smoke covers extraction/scoring defaults; live local Chennai run: 6 valid, 3 enriched, 3 below floor, 3 not scored, 3,986 tokens, 1/1 verified quotes, 9 credits. |
+| 2026-11-19 | Groq JSON validation | `openai/gpt-oss-120b` returned `json_validate_failed` with empty generation at a 400-token cap. Low reasoning effort plus an 800-token cap fixed it; a retry without `response_format` is retained as fallback. |
+| 2026-11-19 | M4 deploy | Worker `3d2f3245-ae0b-4a2b-9642-b7837c7ceab3` deployed; no new migration; `GROQ_API_KEY` set; `leads.kripa.tech` and `/api/health` still 302 to Access. |

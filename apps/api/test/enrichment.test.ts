@@ -9,6 +9,7 @@ import {
   createDohResolver,
   decodeEntities,
   enrichProspect,
+  extractCodeFacts,
   extractCopyrightYear,
   extractEmailsFromText,
   extractPhonesFromText,
@@ -259,6 +260,7 @@ describe("HTML helpers", () => {
     expect(normalizeEmail("not-an-email")).toBeNull();
     expect(normalizeEmail("logo@2x.png")).toBeNull();
     expect(normalizePhone("+91 98765 43210")).toBe("+919876543210");
+    expect(normalizePhone("+02 905 64057")).toBeNull();
     expect(normalizePhone("12345")).toBeNull();
     expect(socialHostOf("https://www.linkedin.com/company/acme")).toBe("linkedin.com");
     expect(socialHostOf("https://example.com/about")).toBeNull();
@@ -362,6 +364,7 @@ describe("enrichProspect", () => {
     expect(outcome.facts.websiteEmails).toEqual(["sales@acme.test"]);
     expect(outcome.facts.websitePhones).toEqual(["+919876543210"]);
     expect(outcome.facts.websiteHasContactForm).toBe(true);
+    expect(outcome.facts.websiteHasContactPage).toBe(true);
     expect(outcome.facts.websiteCopyrightYear).toBe(2025);
     expect(outcome.stats).toEqual({
       pagesFetched: 2,
@@ -446,6 +449,68 @@ describe("enrichProspect", () => {
     expect(String((outcome.enrichment.errors as Array<{ error: string }>)[0]?.error)).toContain(
       "timeout",
     );
+  });
+});
+
+describe("code-facts", () => {
+  const now = new Date("2026-01-01T00:00:00.000Z").getUTCFullYear();
+
+  it("extracts founding year from a founded/since statement", () => {
+    const { founded } = extractCodeFacts(
+      [
+        {
+          url: "https://acme.test/",
+          text: "Welcome to Acme. Founded in 1979, we have served Chennai for decades.",
+        },
+      ],
+      now,
+    );
+    expect(founded).toEqual({ value: 1979, quote: "Founded in 1979", sourceUrl: "https://acme.test/" });
+  });
+
+  it("extracts founding year from 'since' and rejects copyright years", () => {
+    const { founded } = extractCodeFacts(
+      [
+        {
+          url: "https://acme.test/",
+          text: "&copy; Acme, Since 1999. All rights reserved. Our story began in 2005.",
+        },
+      ],
+      now,
+    );
+    expect(founded).toEqual({
+      value: 2005,
+      quote: "story began in 2005",
+      sourceUrl: "https://acme.test/",
+    });
+  });
+
+  it("extracts office count and rejects sales-unit statements", () => {
+    const { offices } = extractCodeFacts(
+      [
+        {
+          url: "https://acme.test/",
+          text: "We have 3 offices in Chennai and reported 650 unit sales last year.",
+        },
+      ],
+      now,
+    );
+    expect(offices).toEqual({ value: 3, quote: "3 offices", sourceUrl: "https://acme.test/" });
+  });
+
+  it("extracts employee count", () => {
+    const { team } = extractCodeFacts(
+      [{ url: "https://acme.test/", text: "Our team of 45 people builds software." }],
+      now,
+    );
+    expect(team).toEqual({ value: 45, quote: "team of 45", sourceUrl: "https://acme.test/" });
+  });
+
+  it("returns null when no fact is stated", () => {
+    const result = extractCodeFacts([{ url: "https://acme.test/", text: "Welcome to our store." }], now);
+    expect(result.founded).toBeNull();
+    expect(result.team).toBeNull();
+    expect(result.offices).toBeNull();
   });
 });
 

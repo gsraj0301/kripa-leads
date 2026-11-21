@@ -61,11 +61,13 @@ function failedOutcome(website: string, error: unknown): EnrichmentOutcome {
       websitePhones: [],
       websiteSocialLinks: [],
       websiteHasContactForm: false,
+      websiteHasContactPage: false,
       websiteCopyrightYear: null,
       websitePagesFetched: 0,
       websiteTextChars: 0,
       websiteUsableText: false,
       websiteErrors: [{ url: website, error: message }],
+      websiteFailureReason: message,
       websiteRobotsBlocked: false,
     },
     provenance: {

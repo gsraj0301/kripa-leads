@@ -80,6 +80,8 @@ let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
   const j=JSON.parse(s).settings;
   if(j.approved!==false || j.provisional!==true) throw new Error("update should return to provisional");
   if(j.enrichment?.maxPagesPerProspect!==3 || j.enrichment?.respectRobots!==true) throw new Error("enrichment defaults missing");
+  if(j.extraction?.maxInputChars!==3000 || j.extraction?.runTokenBudget!==140000) throw new Error("extraction defaults missing");
+  if(j.scoring?.bands?.fit?.high!==80) throw new Error("scoring defaults missing");
   console.log("settings update ok, version", j.configVersion);
 });'
 

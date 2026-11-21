@@ -120,6 +120,8 @@ runRoutes.post("/runs", async (c) => {
     segmentsSnapshot: { segments: selected },
     scoringSnapshot: {
       rubrics: Object.fromEntries(selected.map((segment) => [segment.id, settings.rubrics[segment.id]])),
+      scoring: settings.scoring,
+      extraction: settings.extraction,
     },
     scoringConfigVersion: settings.configVersion,
   });

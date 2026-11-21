@@ -1,5 +1,7 @@
 import { normalizeWebsite } from "../discovery";
 import type { EnrichmentConfig } from "../settings";
+import { classifyPageKind } from "../extraction/coverage";
+import { extractCodeFacts } from "./code-facts";
 import { isUsableText, mergeExtractions, pickContactPages } from "./html";
 import { extractPageWithHtmlRewriter } from "./html-rewriter";
 import { createRobotsLoader, isAllowedByRobots } from "./robots";
@@ -16,6 +18,7 @@ import type {
   PageResult,
   RobotsResult,
 } from "./types";
+import { PAGE_TEXT_CAP } from "./types";
 
 interface PageContext {
   config: EnrichmentConfig;
@@ -54,6 +57,8 @@ async function fetchPage(url: string, ctx: PageContext): Promise<PageResult> {
     robotsAllowed: true,
     redirects: 0,
     error: null,
+    kind: classifyPageKind(url),
+    text: null,
   };
 
   if (ctx.config.respectRobots) {
@@ -119,7 +124,10 @@ async function fetchPage(url: string, ctx: PageContext): Promise<PageResult> {
     }
 
     const extraction = await ctx.deps.extract(result.text, result.finalUrl.toString());
-    return { record, extraction };
+    return {
+      record: { ...record, text: extraction.text.slice(0, PAGE_TEXT_CAP) },
+      extraction,
+    };
   } catch (error) {
     const message =
       error instanceof SsrfError
@@ -189,6 +197,18 @@ export async function enrichProspect(
     .filter((extraction): extraction is NonNullable<typeof extraction> => extraction !== null);
   const merged = mergeExtractions(extractions, config.totalTextChars, now());
 
+  const codeFactPages = pages
+    .filter((page) => page.extraction !== null)
+    .map((page) => ({
+      url: page.record.finalUrl ?? page.record.url,
+      text: page.extraction?.text ?? "",
+    }));
+  const codeFacts = extractCodeFacts(codeFactPages, now().getUTCFullYear());
+  const deadSite = pages.some((page) => {
+    const error = (page.record.error ?? "").toLowerCase();
+    return error.includes("dead_site") || error.includes("nxdomain");
+  });
+
   const fetchedAt = now().toISOString();
   const homepageRecord = pages[0]?.record;
   const finalUrl = homepageRecord?.finalUrl ?? websiteUrl;
@@ -200,6 +220,15 @@ export async function enrichProspect(
     (page) => page.record.robotsAllowed && page.record.status !== null,
   ).length;
   const usable = isUsableText(merged.text, config.minUsableTextChars);
+  const hasContactPage = pages.some((page) => {
+    try {
+      return /\/(?:contact|contact-us|get-in-touch|enquiry|enquiries|reach-us)\b/i.test(
+        new URL(page.record.finalUrl ?? page.record.url).pathname,
+      );
+    } catch {
+      return false;
+    }
+  });
 
   const facts: Record<string, unknown> = {
     websiteUrl,
@@ -216,11 +245,15 @@ export async function enrichProspect(
     websitePhones: merged.phones,
     websiteSocialLinks: merged.socialLinks,
     websiteHasContactForm: merged.hasContactForm,
+    websiteHasContactPage: hasContactPage,
     websiteCopyrightYear: merged.copyrightYear,
     websiteTitle: merged.title,
     websiteDescription: merged.description,
     websiteErrors: errors,
+    websiteFailureReason: homepageRecord?.error ?? null,
     websiteRobotsBlocked: robotsBlocked,
+    websiteDeadSite: deadSite,
+    websiteCodeFacts: codeFacts,
   };
 
   const provenance: Record<string, unknown> = {
@@ -235,9 +268,19 @@ export async function enrichProspect(
   if (merged.phones.length > 0) provenance.websitePhones = provenanceEntry(finalUrl, fetchedAt);
   if (merged.socialLinks.length > 0) provenance.websiteSocialLinks = provenanceEntry(finalUrl, fetchedAt);
   if (merged.hasContactForm) provenance.websiteHasContactForm = provenanceEntry(finalUrl, fetchedAt);
+  if (hasContactPage) provenance.websiteHasContactPage = provenanceEntry(finalUrl, fetchedAt);
   if (merged.copyrightYear !== null) provenance.websiteCopyrightYear = provenanceEntry(finalUrl, fetchedAt);
   if (merged.title) provenance.websiteTitle = provenanceEntry(finalUrl, fetchedAt);
   if (merged.description) provenance.websiteDescription = provenanceEntry(finalUrl, fetchedAt);
+  if (codeFacts.founded || codeFacts.team || codeFacts.offices) {
+    provenance.websiteCodeFacts = {
+      source: "website",
+      source_url: finalUrl,
+      retrieved_at: fetchedAt,
+      kind: "verified",
+      matcher: "regex",
+    };
+  }
 
   const stats: EnrichmentStats = {
     pagesFetched,

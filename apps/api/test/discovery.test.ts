@@ -6,6 +6,7 @@ import {
   creditsForPlaces,
   dedupeCandidates,
   estimateDiscoveryCredits,
+  estimateExtractionRun,
   isValidCandidate,
   normalizeCompanyKey,
   websiteDomain,
@@ -162,5 +163,43 @@ describe("GeoapifyClient", () => {
     });
     await client.geocode("Chennai");
     await expect(client.geocode("Mumbai")).rejects.toBeInstanceOf(CreditBudgetError);
+  });
+});
+
+describe("estimateExtractionRun", () => {
+  it("caps calls by discovery results and run budget", () => {
+    const result = estimateExtractionRun({
+      categories: 3,
+      maxResultsPerCategory: 40,
+      runTokenBudget: 140_000,
+      estimatedTokensPerProspect: 1_300,
+      minIntervalMs: 10_000,
+    });
+    expect(result.calls).toBe(Math.min(120, Math.floor(140_000 / 1_300)));
+    expect(result.minutes).toBe(Math.ceil(result.calls * 10_000 / 60_000));
+    expect(result.tokens).toBe(result.calls * 1_300);
+  });
+
+  it("caps at affordable calls below discovery count", () => {
+    const result = estimateExtractionRun({
+      categories: 3,
+      maxResultsPerCategory: 40,
+      runTokenBudget: 1_300,
+      estimatedTokensPerProspect: 1_300,
+      minIntervalMs: 10_000,
+    });
+    expect(result.calls).toBe(1);
+    expect(result.minutes).toBe(1);
+  });
+
+  it("returns zero minutes for zero interval", () => {
+    const result = estimateExtractionRun({
+      categories: 1,
+      maxResultsPerCategory: 10,
+      runTokenBudget: 1_000_000,
+      estimatedTokensPerProspect: 1_300,
+      minIntervalMs: 0,
+    });
+    expect(result.minutes).toBe(0);
   });
 });

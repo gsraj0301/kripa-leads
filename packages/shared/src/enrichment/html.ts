@@ -66,6 +66,7 @@ export function normalizeEmail(value: string): string | null {
 export function normalizePhone(value: string): string | null {
   const digits = decodeEntities(value).replace(/\D/g, "").replace(/^00/, "");
   if (digits.length < 10 || digits.length > 15) return null;
+  if (digits.startsWith("0")) return null;
   return `+${digits}`;
 }
 

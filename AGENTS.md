@@ -6,7 +6,7 @@ Durable constraints for this repository. Read `docs/PLAN.md` before changing any
 
 Internal lead discovery and qualification tool for Kripa Associates, served at `leads.kripa.tech`. It finds businesses in a chosen area, enriches from their own websites, scores them on two separate axes, and exports a reviewed Excel sheet. It does not send outreach.
 
-Status: M1-M3 deployed at `leads.kripa.tech`. Access JWT middleware, D1 schema, settings API, Geoapify geocoding/Places/Details discovery, dedupe, delivery exclusion, run counts, credit budget, and website enrichment with SSRF guard, robots handling, HTMLRewriter facts and provenance are implemented. The web app can plan, start, and monitor discovery plus enrichment runs. Scoring, review, and export (M4-M6) remain.
+Status: M1-M4 deployed at `leads.kripa.tech` (Worker version `3d2f3245-ae0b-4a2b-9642-b7837c7ceab3`). Access JWT middleware, D1 schema, settings API, Geoapify geocoding/Places/Details discovery, dedupe, delivery exclusion, run counts, credit budget, website enrichment with SSRF guard, robots handling, HTMLRewriter facts and provenance, Groq extraction with quote verification, and deterministic Fit/Contactability scoring with explain evidence and token accounting are implemented. The web app can plan, start, and monitor discovery, enrichment, and scoring runs. Review and export (M5-M6) remain.
 
 Runtime: Node 18.19 with Wrangler 3.x. `@cloudflare/vitest-pool-workers` cannot resolve module paths containing spaces, so tests are plain Vitest unit tests plus `scripts/smoke-local.sh` (real D1 + Worker over HTTP).
 
@@ -27,7 +27,7 @@ Runtime: Node 18.19 with Wrangler 3.x. `@cloudflare/vitest-pool-workers` cannot 
 
 Secrets: local scripts read `.env`; Wrangler reads `.dev.vars` with the same keys. Never commit either file. `.dev.vars` also carries `ENVIRONMENT=development` and `AUTH_DEV_BYPASS=true` for local login; production must use `ENVIRONMENT=production` with no bypass and `wrangler secret put` for the Access values.
 
-Required keys: `GEOAPIFY_API_KEY`, `GROQ_API_KEY`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`.
+Required keys: `GEOAPIFY_API_KEY`, `GROQ_API_KEY`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`. All four are set as remote Worker secrets. `.env` may quote values; strip surrounding quotes before copying a key into `.dev.vars` or piping it to `wrangler secret put`.
 
 ## Invariants
 

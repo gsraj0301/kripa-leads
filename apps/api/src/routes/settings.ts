@@ -6,6 +6,7 @@ import {
   type SettingsResponse,
 } from "@kripa/shared";
 import type { AppEnv } from "../env";
+import { nowIso } from "@kripa/db";
 
 export const settingsRoutes = new Hono<AppEnv>();
 
@@ -15,14 +16,28 @@ settingsRoutes.get("/", async (c) => {
 });
 
 settingsRoutes.put("/", async (c) => {
-  const body = SettingsUpdateSchema.parse(await c.req.json());
+  const raw = await c.req.json();
+  const body = SettingsUpdateSchema.parse(raw);
   const actor = c.get("actor");
+  const previous = await ensureSettings(c.env.DB);
   const settings = await putSettings(c.env.DB, body, actor.email);
   await insertEvent(c.env.DB, {
     eventType: "settings_updated",
     payload: { configVersion: settings.configVersion },
     actorEmail: actor.email,
   });
+  if (previous.exports.enabled !== settings.exports.enabled) {
+    const note = (raw as { note?: string }).note ?? null;
+    await insertEvent(c.env.DB, {
+      eventType: "exports_toggled",
+      actorEmail: actor.email,
+      payload: {
+        enabled: settings.exports.enabled,
+        note,
+        at: nowIso(),
+      },
+    });
+  }
   return c.json({ settings } satisfies SettingsResponse);
 });
 

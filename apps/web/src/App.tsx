@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   estimateDiscoveryCredits,
+  estimateExtractionRun,
   type GeocodeCandidate,
   type MeResponse,
+  type Prospect,
   type Run,
   type Settings,
 } from "@kripa/shared";
+import { buildExportWorkbook, downloadWorkbook, exportFilename } from "./export";
 
 type LoadState =
   | { status: "loading" }
@@ -26,8 +29,104 @@ function statusClass(status: string): string {
   if (status === "failed") return "bg-red-100 text-red-800";
   if (status === "discovering") return "bg-sky-100 text-sky-800";
   if (status === "enriching") return "bg-indigo-100 text-indigo-800";
+  if (status === "scoring") return "bg-violet-100 text-violet-800";
   if (status === "planned") return "bg-amber-100 text-amber-800";
   return "bg-slate-100 text-slate-600";
+}
+
+interface ExplainComponent {
+  points: number;
+  max: number;
+  observation: string;
+  reason: string;
+}
+
+interface ExplainData {
+  reason?: string;
+  detail?: string;
+  fit?: {
+    serviceFit: ExplainComponent;
+    size: ExplainComponent;
+    tenure: ExplainComponent;
+    geography: ExplainComponent;
+    negativeFlags?: Array<{ id: string; mode: string; points: number; applied: boolean }>;
+    total?: number;
+  };
+  contactability?: {
+    reachableChannel: ExplainComponent;
+    workingSite: ExplainComponent;
+    contactPath: ExplainComponent;
+    freshness: ExplainComponent;
+    total?: number;
+  };
+  tags?: Array<{ id: string; points: number; present: boolean; verified: boolean; quote: string | null }>;
+}
+
+function componentLabel(key: string): string {
+  return key.replace(/([A-Z])/g, " $1").replace(/^./, (value) => value.toUpperCase());
+}
+
+function ExplainPanel({ prospect }: { prospect: Prospect }) {
+  const explain = prospect.scoreExplain as unknown as ExplainData;
+  if (!explain.fit || !explain.contactability) {
+    return (
+      <p className="mt-2 text-xs text-slate-500">
+        {explain.reason ?? "No score explanation."}
+        {explain.detail ? ` ${explain.detail}` : ""}
+      </p>
+    );
+  }
+
+  const fitComponents = ["serviceFit", "size", "tenure", "geography"] as const;
+  const contactComponents = ["reachableChannel", "workingSite", "contactPath", "freshness"] as const;
+  const evidence = (explain.tags ?? []).filter((tag) => tag.present && tag.verified);
+
+  return (
+    <details className="mt-2 rounded border border-slate-200 bg-slate-50 p-2 text-xs">
+      <summary className="cursor-pointer font-medium text-slate-700">Why this score</summary>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <div className="mb-1 font-semibold text-slate-700">Fit</div>
+          {fitComponents.map((key) => {
+            const component = explain.fit?.[key];
+            if (!component) return null;
+            return (
+              <p key={key} className="text-slate-600">
+                <span className="font-medium text-slate-700">{componentLabel(key)}</span>{" "}
+                {component.points}/{component.max} · {component.observation} · {component.reason}
+              </p>
+            );
+          })}
+        </div>
+        <div>
+          <div className="mb-1 font-semibold text-slate-700">Contactability</div>
+          {contactComponents.map((key) => {
+            const component = explain.contactability?.[key];
+            if (!component) return null;
+            return (
+              <p key={key} className="text-slate-600">
+                <span className="font-medium text-slate-700">{componentLabel(key)}</span>{" "}
+                {component.points}/{component.max} · {component.observation} · {component.reason}
+              </p>
+            );
+          })}
+        </div>
+      </div>
+      {evidence.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 font-semibold text-slate-700">Verified evidence</div>
+          <ul className="space-y-1">
+            {evidence.map((tag) => (
+              <li key={tag.id} className="text-slate-600">
+                <span className="font-medium text-slate-700">{tag.id}</span> ({tag.points} pts):{" "}
+                “{tag.quote}”
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </details>
+  );
 }
 
 export function App() {
@@ -41,6 +140,9 @@ export function App() {
   const [includeDelivered, setIncludeDelivered] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [prospectsByRun, setProspectsByRun] = useState<Record<string, Prospect[]>>({});
+  const [prospectsLoading, setProspectsLoading] = useState<string | null>(null);
 
   const refreshRuns = useCallback(async () => {
     const response = await fetch("/api/runs");
@@ -96,7 +198,11 @@ export function App() {
   }, [refreshRuns]);
 
   const hasActiveRun = runs.some(
-    (run) => run.status === "planned" || run.status === "discovering",
+    (run) =>
+      run.status === "planned" ||
+      run.status === "discovering" ||
+      run.status === "enriching" ||
+      run.status === "scoring",
   );
 
   useEffect(() => {
@@ -115,6 +221,33 @@ export function App() {
           state.settings.discovery.maxResultsPerCategory,
         )
       : null;
+
+  const extractionEstimate =
+    state.status === "ready"
+      ? estimateExtractionRun({
+          categories: categories.length,
+          maxResultsPerCategory: state.settings.discovery.maxResultsPerCategory,
+          runTokenBudget: state.settings.extraction.runTokenBudget,
+          estimatedTokensPerProspect: state.settings.extraction.estimatedTokensPerProspect,
+          minIntervalMs: state.settings.extraction.minIntervalMs,
+        })
+      : null;
+
+  let expectedRaw: number | null = null;
+  let expectedEnriched: number | null = null;
+  let expectedScored: number | null = null;
+  let expectedAboveFloor: number | null = null;
+  let sRuns = "";
+  let sCities = "";
+  if (state.status === "ready") {
+    const py = state.settings.planYields;
+    expectedRaw = Math.ceil(100 * py.rawPerValid);
+    expectedEnriched = Math.round(100 * py.enrichedPerValid);
+    expectedScored = Math.round(expectedEnriched * py.scoredPerEnriched);
+    expectedAboveFloor = Math.round(expectedScored * py.aboveFloorPerScored);
+    sRuns = py.observedRuns === 1 ? "" : "s";
+    sCities = py.observedCities === 1 ? "" : "s";
+  }
 
   const selectedCandidate = candidates.find((candidate) => candidate.placeId === selectedPlaceId);
 
@@ -168,6 +301,26 @@ export function App() {
     }
   };
 
+  const toggleProspects = async (runId: string) => {
+    if (openRunId === runId) {
+      setOpenRunId(null);
+      return;
+    }
+    setOpenRunId(runId);
+    if (prospectsByRun[runId]) return;
+    setProspectsLoading(runId);
+    try {
+      const response = await fetch(`/api/runs/${runId}/prospects`);
+      if (!response.ok) throw new Error(await readError(response));
+      const body = (await response.json()) as { prospects: Prospect[] };
+      setProspectsByRun((current) => ({ ...current, [runId]: body.prospects }));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load prospects.");
+    } finally {
+      setProspectsLoading(null);
+    }
+  };
+
   const startRun = async (runId: string) => {
     setMessage(null);
     setBusy(true);
@@ -177,6 +330,29 @@ export function App() {
       await refreshRuns();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not start the run.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleExport = async (runId: string) => {
+    if (state.status !== "ready") return;
+    const settings = state.settings;
+    if (!settings.exports.enabled) return;
+    const run = runs.find((r) => r.id === runId);
+    if (!run) return;
+    const prospects = prospectsByRun[runId] ?? [];
+    if (prospects.length === 0) {
+      setMessage("No prospects loaded for this run. Open the scores first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const workbook = buildExportWorkbook(prospects, run, settings);
+      downloadWorkbook(workbook, exportFilename(run));
+      setMessage("Export downloaded.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Export failed.");
     } finally {
       setBusy(false);
     }
@@ -359,11 +535,20 @@ export function App() {
                   Include companies already delivered
                 </label>
 
-                {estimate && (
+                {estimate && extractionEstimate && (
                   <p className="text-sm text-slate-600">
                     Up to <span className="font-semibold">{estimate.total}</span> credits for{" "}
                     {categories.length} categories, {state.settings.discovery.maxResultsPerCategory}{" "}
-                    results each. The run aborts before exceeding the daily budget.
+                    results each. Model calls are capped at ~{extractionEstimate.tokens.toLocaleString()}{" "}
+                    tokens (~{extractionEstimate.calls} calls, ~{extractionEstimate.minutes} min at a{" "}
+                    {Math.max(1, state.settings.extraction.minIntervalMs / 1000)}s interval), plus enrichment.{" "}
+                    The run aborts before exceeding the daily budget.
+                  </p>
+                )}
+
+                {expectedRaw != null && (
+                  <p className="text-sm text-slate-600">
+                    At observed yields ({py.runs} run{sRuns} / {py.cities} city{sCities}), a target of 100 valid prospects needs ~{expectedRaw} raw and yields ~{expectedEnriched} enriched, ~{expectedScored} scored, ~{expectedAboveFloor} above floor.
                   </p>
                 )}
 
@@ -421,6 +606,22 @@ export function App() {
                               Start
                             </button>
                           )}
+                          {run.status !== "planned" &&
+                            (run.counts.scored > 0 || run.counts.belowFloor > 0 || run.counts.notScored > 0) && (
+                              <button
+                                type="button"
+                                onClick={() => void handleExport(run.id)}
+                                disabled={busy || !state.settings.exports.enabled}
+                                className="rounded bg-slate-900 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-40"
+                                title={
+                                  !state.settings.exports.enabled
+                                    ? "Exports disabled pending Kripa sign-off"
+                                    : undefined
+                                }
+                              >
+                                Export to Excel
+                              </button>
+                            )}
                         </div>
                       </div>
                       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
@@ -428,6 +629,13 @@ export function App() {
                         <span>valid {run.counts.valid}</span>
                         <span>enriched {run.counts.enriched}</span>
                         <span>pages {run.counts.pagesFetched}</span>
+                        <span>scored {run.counts.scored}</span>
+                        {run.counts.belowFloor > 0 && (
+                          <span>below floor {run.counts.belowFloor}</span>
+                        )}
+                        {run.counts.notScored > 0 && (
+                          <span>not scored {run.counts.notScored}</span>
+                        )}
                         {run.counts.enrichmentFailures > 0 && (
                           <span className="text-red-600">
                             site failures {run.counts.enrichmentFailures}
@@ -436,10 +644,82 @@ export function App() {
                         {run.counts.skippedNoWebsite > 0 && (
                           <span>no website {run.counts.skippedNoWebsite}</span>
                         )}
+                        {run.counts.extractionFailures > 0 && (
+                          <span className="text-red-600">
+                            extraction failures {run.counts.extractionFailures}
+                          </span>
+                        )}
+                        {run.counts.quoteFailures > 0 && (
+                          <span className="text-amber-700">
+                            quote failures {run.counts.quoteFailures}/{run.counts.quoteChecks}
+                          </span>
+                        )}
+                        <span>tokens {run.counts.tokensUsed}</span>
                         <span>delivered dropped {run.counts.droppedDelivered}</span>
                         <span>credits {run.counts.creditsUsed}</span>
                         <span>segments {run.segmentIds.join(", ")}</span>
                       </div>
+                      {(run.counts.scored > 0 || run.counts.belowFloor > 0 || run.counts.notScored > 0) && (
+                        <button
+                          type="button"
+                          onClick={() => void toggleProspects(run.id)}
+                          className="mt-2 rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          {openRunId === run.id ? "Hide scores" : "Show scores"}
+                        </button>
+                      )}
+                      {openRunId === run.id && (
+                        <div className="mt-3 space-y-3">
+                          {prospectsLoading === run.id && (
+                            <p className="text-xs text-slate-500">Loading prospects...</p>
+                          )}
+                          {prospectsByRun[run.id]?.length === 0 && (
+                            <p className="text-xs text-slate-500">No prospects stored for this run.</p>
+                          )}
+                          {prospectsByRun[run.id]?.map((prospect) => (
+                            <div key={prospect.id} className="rounded border border-slate-200 p-3">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <div className="text-sm font-medium">{prospect.name}</div>
+                                  <div className="text-xs text-slate-500">
+                                    {prospect.website ? (
+                                      <a
+                                        href={prospect.website}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="underline"
+                                      >
+                                        {prospect.website}
+                                      </a>
+                                    ) : (
+                                      "no website"
+                                    )}
+                                    {prospect.city ? ` · ${prospect.city}` : ""}
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-1 text-xs">
+                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
+                                    {prospect.status}
+                                  </span>
+                                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">
+                                    fit {prospect.fitScore ?? "—"} {prospect.fitBand ?? ""}
+                                  </span>
+                                  <span className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-800">
+                                    contact {prospect.contactabilityScore ?? "—"}{" "}
+                                    {prospect.contactabilityBand ?? ""}
+                                  </span>
+                                  {prospect.needsManualContactResearch && (
+                                    <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800">
+                                      manual research
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <ExplainPanel prospect={prospect} />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

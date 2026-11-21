@@ -241,6 +241,55 @@ export function companyKeyOf(candidate: DiscoveryCandidate): string {
   return normalizeCompanyKey(candidate);
 }
 
+const ENTERPRISE_TAG_KEYS = ["brand", "operator", "brand:wikidata"] as const;
+
+export interface EnterpriseTags {
+  brands: string[];
+  operators: string[];
+  wikidataIds: string[];
+}
+
+export function enterpriseTagsOf(candidate: DiscoveryCandidate): EnterpriseTags {
+  const brands = new Set<string>();
+  const operators = new Set<string>();
+  const wikidataIds = new Set<string>();
+  const sources = [candidate.raw.place, candidate.raw.details ?? {}];
+  for (const source of sources) {
+    const brand = asString(source.brand);
+    const operator = asString(source.operator);
+    const wikidata = asString(source["brand:wikidata"]);
+    if (brand) brands.add(brand.toLowerCase());
+    if (operator) operators.add(operator.toLowerCase());
+    if (wikidata) wikidataIds.add(wikidata.toUpperCase());
+  }
+  return {
+    brands: [...brands],
+    operators: [...operators],
+    wikidataIds: [...wikidataIds],
+  };
+}
+
+export function isEnterpriseCandidate(
+  candidate: DiscoveryCandidate,
+  filter: {
+    enabled: boolean;
+    brands: string[];
+    operators: string[];
+  },
+): boolean {
+  if (!filter.enabled) return false;
+  const tags = enterpriseTagsOf(candidate);
+  const brands = new Set(filter.brands.map((value) => value.toLowerCase()));
+  const operators = new Set(filter.operators.map((value) => value.toLowerCase()));
+  // Generic chain rule: any OSM brand:wikidata tags the place as a known chain/brand.
+  const hasWikidata = tags.wikidataIds.length > 0;
+  return (
+    hasWikidata ||
+    tags.brands.some((value) => brands.has(value)) ||
+    tags.operators.some((value) => operators.has(value))
+  );
+}
+
 export function creditsForPlaces(resultCount: number): number {
   return Math.max(1, Math.ceil(resultCount / 20));
 }

@@ -5,6 +5,7 @@ import {
   candidateFromProperties,
   companyKeyOf,
   dedupeCandidates,
+  isEnterpriseCandidate,
   isValidCandidate,
   type DiscoveryCandidate,
   type RunCounts,
@@ -168,13 +169,19 @@ export async function discoverRun(
 
   const kept = deduped.candidates.filter((candidate) => !delivered.has(companyKeyOf(candidate)));
   const droppedDelivered = deduped.candidates.length - kept.length;
+  const enterpriseFilter = settings.discovery.enterpriseFilter;
+  const enterpriseExcludedCandidates = kept.filter((candidate) =>
+    isEnterpriseCandidate(candidate, enterpriseFilter),
+  );
+  const enterpriseExcluded = enterpriseExcludedCandidates.length;
+  const filtered = kept.filter((candidate) => !isEnterpriseCandidate(candidate, enterpriseFilter));
   const retrievedAt = now().toISOString();
 
   const inserts: ProspectInsert[] = [];
   let valid = 0;
   let invalid = 0;
 
-  for (const candidate of kept) {
+  for (const candidate of filtered) {
     if (!candidate.name?.trim()) {
       invalid += 1;
       continue;
@@ -214,7 +221,8 @@ export async function discoverRun(
   }
 
   const counts: RunCounts = {
-    raw: kept.length,
+    raw: filtered.length,
+    enterpriseExcluded,
     valid,
     enriched: 0,
     enrichmentFailures: 0,
@@ -227,7 +235,15 @@ export async function discoverRun(
     exported: 0,
     creditsUsed: client.creditsUsed,
     tokensUsed: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    extractionCalls: 0,
+    extractionFailures: 0,
     quoteFailures: 0,
+    quoteChecks: 0,
+    countFailures: 0,
+    countChecks: 0,
+    enrichmentFailureReasons: {},
     droppedDelivered,
     invalid,
     duplicatePlaceIds: deduped.duplicatePlaceIds,
@@ -242,6 +258,10 @@ export async function discoverRun(
       ...counts,
       requests: client.requests,
       categories,
+      enterpriseExcludedNames: enterpriseExcludedCandidates
+        .map((candidate) => candidate.name)
+        .filter((name): name is string => Boolean(name))
+        .slice(0, 50),
       detailsFailures: detailsFailures.slice(0, 20),
     },
   });

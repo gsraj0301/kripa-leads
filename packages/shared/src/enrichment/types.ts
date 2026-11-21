@@ -1,3 +1,5 @@
+import type { PageKind } from "../extraction/coverage";
+
 export interface DnsAddress {
   address: string;
   family: 4 | 6;
@@ -32,7 +34,11 @@ export interface PageRecord {
   robotsAllowed: boolean;
   redirects: number;
   error: string | null;
+  kind: PageKind;
+  text: string | null;
 }
+
+export const PAGE_TEXT_CAP = 3_000;
 
 export interface PageResult {
   record: PageRecord;

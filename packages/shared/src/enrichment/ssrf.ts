@@ -9,6 +9,7 @@ export class SsrfError extends Error {
     | "blocked_hostname"
     | "blocked_port"
     | "dns_failure"
+    | "dead_site"
     | "too_many_redirects"
     | "timeout"
     | "network";
@@ -76,29 +77,41 @@ async function fetchDnsType(
   const url = new URL(DOH_ENDPOINT);
   url.searchParams.set("name", hostname);
   url.searchParams.set("type", type);
-  const response = await fetchImpl(url.toString(), {
-    headers: { accept: "application/dns-json" },
-    redirect: "follow",
-  });
-  if (!response.ok) {
-    throw new SsrfError("dns_failure", `DoH lookup failed with ${response.status}.`);
+
+  // One retry for SERVFAIL (status 2); NXDOMAIN (status 3) is a dead site.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetchImpl(url.toString(), {
+      headers: { accept: "application/dns-json" },
+      redirect: "follow",
+    });
+    if (!response.ok) {
+      throw new SsrfError("dns_failure", `DoH lookup failed with ${response.status}.`);
+    }
+    const body = (await response.json()) as {
+      Status?: number;
+      Answer?: Array<{ type?: number; data?: string }>;
+    };
+    if (body.Status === 3) {
+      throw new SsrfError("dead_site", `NXDOMAIN for ${hostname}.`);
+    }
+    if (body.Status === 2) {
+      if (attempt === 0) continue;
+      throw new SsrfError("dns_failure", `DoH lookup returned status 2 for ${hostname}.`);
+    }
+    if (body.Status !== 0) {
+      throw new SsrfError("dns_failure", `DoH lookup returned status ${body.Status ?? "unknown"}.`);
+    }
+    const expectedType = type === "A" ? 1 : 28;
+    const addresses: DnsAddress[] = [];
+    for (const answer of body.Answer ?? []) {
+      if (answer.type !== expectedType || typeof answer.data !== "string") continue;
+      const address = answer.data.trim();
+      const valid = type === "A" ? parseIpv4(address) !== null : parseIpv6(address) !== null;
+      if (valid) addresses.push({ address, family: type === "A" ? 4 : 6 });
+    }
+    return addresses;
   }
-  const body = (await response.json()) as {
-    Status?: number;
-    Answer?: Array<{ type?: number; data?: string }>;
-  };
-  if (body.Status !== 0) {
-    throw new SsrfError("dns_failure", `DoH lookup returned status ${body.Status ?? "unknown"}.`);
-  }
-  const expectedType = type === "A" ? 1 : 28;
-  const addresses: DnsAddress[] = [];
-  for (const answer of body.Answer ?? []) {
-    if (answer.type !== expectedType || typeof answer.data !== "string") continue;
-    const address = answer.data.trim();
-    const valid = type === "A" ? parseIpv4(address) !== null : parseIpv6(address) !== null;
-    if (valid) addresses.push({ address, family: type === "A" ? 4 : 6 });
-  }
-  return addresses;
+  throw new SsrfError("dns_failure", `DoH lookup failed for ${hostname}.`);
 }
 
 export function createDohResolver(fetchImpl: typeof fetch): ResolveHost {
@@ -230,6 +243,29 @@ async function readCapped(
 }
 
 export async function fetchPublicUrl(
+  rawUrl: string | URL,
+  options: PublicFetchOptions,
+  deps: { fetchImpl: typeof fetch; resolveHost: ResolveHost },
+): Promise<PublicFetchResult> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await fetchPublicUrlOnce(rawUrl, options, deps);
+    } catch (error) {
+      if (
+        error instanceof SsrfError &&
+        (error.code === "timeout" || error.code === "network")
+      ) {
+        lastError = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError ?? new SsrfError("network", "Fetching failed.");
+}
+
+async function fetchPublicUrlOnce(
   rawUrl: string | URL,
   options: PublicFetchOptions,
   deps: { fetchImpl: typeof fetch; resolveHost: ResolveHost },
